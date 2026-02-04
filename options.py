@@ -1,0 +1,20 @@
+gpu = '0'
+random_seed = 0
+data_type = 'mlac2016'
+video_path = 'lip/'
+train_list = f'data/{data_type}_train.txt'
+val_list = f'data/{data_type}_val.txt'
+test_list = f'data/{data_type}_test.txt'
+anno_path = 'align'
+vid_padding = 40
+txt_padding = 40
+batch_size = 32
+base_lr = 2e-4
+num_workers = 1
+max_epoch = 1000
+display = 10
+test_step = 22
+save_prefix = f'weights/LipNet_{data_type}'
+is_optimize = True
+#重み読み込み
+#weights = './contrastive-onso/LipNet_unseen_loss_0.2934571511215634_wer_1.0018247646160814_cer_2.802098299025159.pt'

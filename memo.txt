@@ -1,0 +1,20 @@
+ouludataset.py
+ここのクラスをインスタンス化するときにunseentrainかvalかを選択する
+いままでの結果は検証でもtrainと同じものを使用していた2025.5.16
+
+インスタンス化するときに指定されたファイルリスト(train、valのテキストファイル)を読み込む
+
+
+unseentrain.txt
+このテキストには45度のディレクトリを指定している
+
+unseenval.txt
+同様に45度のディレクトリを指定している
+
+そこから、正面と横顔を読み込むように作りこんでいる
+
+
+symlink
+lip: /mount/OuluVS2/OuluVS2/OuluVS2-zip/cropped_mouth_zero_png_phrase
+align: /mount/OuluVS2/ouluvs_script/mydata/align-pytorch
+phonem: /mount/OuluVS2/OuluVS2/OuluVS2-zip/mfaalign

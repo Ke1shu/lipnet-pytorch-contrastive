@@ -1,0 +1,10 @@
+[MLAC2016 speaker split]
+base_directory: /workspace/lipnet-p/lip
+profile_view  : 5
+train_speakers(28): [1, 2, 3, 10, 11, 12, 13, 18, 19, 20, 21, 22, 23, 24, 25, 27, 33, 35, 36, 37, 38, 39, 45, 46, 47, 48, 50, 53]
+val_speakers  (12): [4, 5, 7, 14, 16, 17, 28, 31, 32, 40, 41, 42]
+test_speakers (12): [6, 8, 9, 15, 26, 30, 34, 43, 44, 49, 51, 52]
+
+train_items: 840 -> /workspace/lipnet-p/data/mlac2016_train.txt
+val_items  : 360 -> /workspace/lipnet-p/data/mlac2016_val.txt
+test_items : 360 -> /workspace/lipnet-p/data/mlac2016_test.txt
