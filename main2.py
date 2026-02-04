@@ -1476,7 +1476,7 @@ def train3(model, net): #通常Lipnet,test追加
             ####################################
             # ここで角度指定（train2 はここが train の角度）
             ####################################
-            y = net(vid1)
+            y = net(vid3)
 
             # CTC Loss の計算
             loss = crit(y.transpose(0, 1).log_softmax(-1), txt, vid_len.view(-1), txt_len.view(-1))
