@@ -1617,5 +1617,6 @@ if(__name__ == '__main__'):
     #maping(model, net)
     #pre_train3(model, net)
     #train(model,net)
-    combinationLoss(model,net)
+    #combinationLoss(model,net)
+    train3(model,net)
     #train2(model,net)
