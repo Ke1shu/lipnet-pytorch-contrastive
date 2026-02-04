@@ -1351,6 +1351,220 @@ def train2(model, net):
 
 
 
+def train3(model, net): #通常Lipnet,test追加
+    now = datetime.datetime.now()
+    nowstr = now.strftime("%Y-%m-%d_%H-%M-%S")  # ファイル名に日付と時間を組み込む
+
+    dataset = FrontProfile(
+        opt.video_path,
+        opt.anno_path,
+        opt.train_list,
+        opt.vid_padding,
+        opt.txt_padding,
+        'train'
+    )
+
+    dataset = MultiView(
+        opt.video_path,
+        opt.anno_path,
+        opt.train_list,
+        opt.vid_padding,
+        opt.txt_padding,
+        'train'
+    )
+
+    loader = dataset2dataloader(dataset)
+    optimizer = optim.Adam(
+        model.parameters(),
+        lr=opt.base_lr,
+        weight_decay=0.0,
+        amsgrad=True
+    )
+
+    print(f'num_train_data: {len(dataset.data)}')
+    crit = nn.CTCLoss()
+    tic = time.time()
+
+    train_logs = {'loss': [], 'cer': [], 'wer': []}
+    csvname = f'logs/LipNet_{nowstr}.csv'
+
+    # CSVヘッダーの書き込み
+    os.makedirs("logs", exist_ok=True)
+    with open(csvname, 'w', newline='') as csvfile:
+        csvwriter = csv.writer(csvfile)
+        csvwriter.writerow(['epoch', 'loss', 'wer', 'cer'])
+
+    val_epoch = 0
+    test_epoch = 0
+
+    # -----------------------------
+    # select val/test list（combinationLoss と同じ）
+    # -----------------------------
+    used_split = False
+    split_src_val = opt.val_list  # 常に「参照元」は opt.val_list
+
+    if hasattr(opt, 'test_list') and os.path.exists(opt.test_list):
+        # 固定 test を使う（分割しない）
+        val_list_path = opt.val_list
+        test_list_path = opt.test_list
+    else:
+        # val_list を分割して擬似 test を作る（分割する）
+        used_split = True
+        val_list_path, test_list_path = split_file_list(
+            opt.val_list, val_ratio=0.8, seed=opt.random_seed
+        )
+
+    def _count_lines(p):
+        try:
+            with open(p, "r") as f:
+                return len([ln for ln in f.readlines() if ln.strip()])
+        except Exception:
+            return -1
+
+    n_src = _count_lines(split_src_val)
+    n_val = _count_lines(val_list_path)
+    n_test = _count_lines(test_list_path)
+
+    split_info_path = f"logs/val_test_split_{nowstr}.txt"
+    with open(split_info_path, "w") as f:
+        if used_split:
+            f.write("[val/test split output]\n")
+            f.write(f"source_val_list      : {split_src_val} (n={n_src})\n")
+            f.write(f"generated_val_list   : {val_list_path} (n={n_val})\n")
+            f.write(f"generated_test_list  : {test_list_path} (n={n_test})\n")
+            f.write("val_ratio: 0.8\n")
+            f.write(f"seed: {opt.random_seed}\n")
+        else:
+            f.write("[val/test input summary]\n")
+            f.write(f"val_list  : {val_list_path} (n={n_val})\n")
+            f.write(f"test_list : {test_list_path} (n={n_test})\n")
+
+    print()
+    if used_split:
+        print("[val/test split output]")
+        print(f"  source_val_list      : {split_src_val} (n={n_src})")
+        print(f"  generated_val_list   : {val_list_path} (n={n_val})")
+        print(f"  generated_test_list  : {test_list_path} (n={n_test})")
+    else:
+        print("[val/test input summary]")
+        print(f"  val_list             : {val_list_path} (n={n_val})")
+        print(f"  test_list            : {test_list_path} (n={n_test})")
+    print(f"  info_log             : {split_info_path}")
+    print()
+
+    for epoch in range(opt.max_epoch):
+        loss_sum, cer_sum, wer_sum = 0, 0, 0
+        train_wer, train_cer = [], []
+
+        ####################################
+        # ここで角度指定
+        ####################################
+        for i_iter, input in enumerate(loader):
+            model.train()
+
+            vids = input.get('vids')
+            vid1 = vids[0].cuda()  # 0度
+            vid2 = vids[1].cuda()  # 45度
+            vid3 = vids[2].cuda()  # 90度
+
+            txt = input.get('txt').cuda()
+            vid_len = input.get('vid_len').cuda()
+            txt_len = input.get('txt_len').cuda()
+
+            optimizer.zero_grad()
+
+            ####################################
+            # ここで角度指定（train2 はここが train の角度）
+            ####################################
+            y = net(vid1)
+
+            # CTC Loss の計算
+            loss = crit(y.transpose(0, 1).log_softmax(-1), txt, vid_len.view(-1), txt_len.view(-1))
+            loss_sum += loss.item()
+            loss.backward()
+            if opt.is_optimize:
+                optimizer.step()
+
+            # デコードと評価
+            pred_txt = ctc_decode(y)
+            truth_txt = [MyDataset.arr2txt(txt[_], start=1) for _ in range(txt.size(0))]
+            train_wer.extend(MyDataset.wer(pred_txt, truth_txt))
+            train_cer.extend(MyDataset.cer(pred_txt, truth_txt))
+
+            # イテレーションごとのログ
+            tot_iter = i_iter + epoch * len(loader)
+            if tot_iter % opt.display == 0:
+                avg_wer = np.mean(train_wer)
+                avg_cer = np.mean(train_cer)
+                writer.add_scalar('train loss', loss.item(), tot_iter)
+                writer.add_scalar('train wer', avg_wer, tot_iter)
+                print('-' * 101)
+                print(f'epoch={epoch}, tot_iter={tot_iter}, loss={loss.item():.4f}, train_wer={avg_wer:.4f}')
+                print('-' * 101)
+
+            # -----------------------------
+            # 検証（val/test を wandb に記録）
+            # -----------------------------
+            if tot_iter % opt.test_step == 0:
+                val_loss, val_wer, val_cer = test(model, net, "", file_list=val_list_path)
+                test_loss, test_wer, test_cer = test(model, net, "", file_list=test_list_path)
+
+                wandb.log({
+                    "val_epoch": val_epoch,
+                    "val_loss": val_loss,
+                    "val_cer": val_cer,
+                    "val_wer": val_wer,
+                    "test_epoch": test_epoch,
+                    "test_loss": test_loss,
+                    "test_cer": test_cer,
+                    "test_wer": test_wer,
+                })
+
+                val_epoch += 1
+                test_epoch += 1
+
+                writer.add_scalar('val loss', val_loss, tot_iter)
+                writer.add_scalar('val wer', val_wer, tot_iter)
+                writer.add_scalar('val cer', val_cer, tot_iter)
+
+                writer.add_scalar('test loss', test_loss, tot_iter)
+                writer.add_scalar('test wer', test_wer, tot_iter)
+                writer.add_scalar('test cer', test_cer, tot_iter)
+
+        # エポック終了後の統計
+        epoch_loss = loss_sum / len(loader)
+        epoch_cer = np.mean(train_cer)
+        epoch_wer = np.mean(train_wer)
+        train_logs['loss'].append(epoch_loss)
+        train_logs['cer'].append(epoch_cer)
+        train_logs['wer'].append(epoch_wer)
+
+        # エポック単位のログを記録
+        wandb.log({
+            "train_epoch": epoch,
+            "train_loss": epoch_loss,
+            "train_cer": epoch_cer,
+            "train_wer": epoch_wer
+        })
+
+        with open(csvname, 'a', newline='') as csvfile:
+            csvwriter = csv.writer(csvfile)
+            csvwriter.writerow([epoch, epoch_loss, epoch_wer, epoch_cer])
+
+        # モデル保存
+        savename = f'{nowstr}_{opt.save_prefix}_loss_{epoch_loss:.4f}_wer_{epoch_wer:.4f}_cer_{epoch_cer:.4f}.pt'
+        (path, name) = os.path.split(savename)
+        if not os.path.exists(path):
+            os.makedirs(path)
+        torch.save(model.state_dict(), savename)
+
+        print(f'Epoch {epoch}: loss={epoch_loss:.4f}, cer={epoch_cer:.4f}, wer={epoch_wer:.4f}')
+
+    print('Training complete.')
+
+
+
+
 
                 
 if(__name__ == '__main__'):
