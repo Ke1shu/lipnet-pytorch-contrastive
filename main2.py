@@ -1563,6 +1563,173 @@ def train3(model, net): #通常Lipnet,test追加
     print('Training complete.')
 
 
+def train4(model, net):
+    """
+    train4:
+      - train: use vid0 (front) and vid2 (profile) together by concatenating them on batch dim,
+               and compute ONE CTC loss on the concatenated batch.
+      - val:   evaluate only vid2 (profile) by calling test(..., file_list=opt.val_list)
+              (test() is assumed to use vids[2] internally for inference)
+      - test:  do NOT run
+    """
+    now = datetime.datetime.now()
+    nowstr = now.strftime("%Y-%m-%d_%H-%M-%S")
+
+    # ---- train dataset ----
+    train_dataset = MultiView(
+        opt.video_path,
+        opt.anno_path,
+        opt.train_list,
+        opt.vid_padding,
+        opt.txt_padding,
+        'train'
+    )
+    train_loader = dataset2dataloader(train_dataset)
+
+    print(f'num_train_data:{len(train_dataset.data)}')
+
+    # ---- optimizer ----
+    optimizer = optim.Adam(
+        model.parameters(),
+        lr=opt.base_lr,
+        weight_decay=0.0,
+        amsgrad=True
+    )
+
+    # ---- loss ----
+    crit = nn.CTCLoss()
+
+    # ---- logs ----
+    train_logs = {'loss': [], 'cer': [], 'wer': []}
+    os.makedirs("logs", exist_ok=True)
+    csvname = f'logs/LipNet_train4_{nowstr}.csv'
+    with open(csvname, 'w', newline='') as csvfile:
+        csvwriter = csv.writer(csvfile)
+        csvwriter.writerow(['epoch', 'loss', 'wer', 'cer'])
+
+    val_epoch = 0
+
+    for epoch in range(opt.max_epoch):
+        loss_sum = 0.0
+        train_wer, train_cer = [], []
+
+        for i_iter, input in enumerate(train_loader):
+            model.train()
+
+            vids = input.get('vids')
+            # MultiView vids = (vid0, vid1, vid2) 前提
+            vid0 = vids[0].cuda()  # 正面
+            vid2 = vids[2].cuda()  # 横顔
+
+            txt = input.get('txt').cuda()
+            vid_len = input.get('vid_len').cuda()
+            txt_len = input.get('txt_len').cuda()
+
+            optimizer.zero_grad()
+
+            # =========================================================
+            # 2view を「2倍バッチ」として結合して 1回で学習
+            # =========================================================
+            # vid_cat: [2B, ...]
+            vid_cat = torch.cat([vid0, vid2], dim=0)
+
+            # txt/len も 2B に揃える
+            txt_cat = torch.cat([txt, txt], dim=0)
+            vid_len_cat = torch.cat([vid_len, vid_len], dim=0)
+            txt_len_cat = torch.cat([txt_len, txt_len], dim=0)
+
+            # forward 1回
+            y = net(vid_cat)
+
+            # CTC loss 1回
+            loss = crit(
+                y.transpose(0, 1).log_softmax(-1),
+                txt_cat,
+                vid_len_cat.view(-1),
+                txt_len_cat.view(-1)
+            )
+
+            loss_sum += loss.item()
+            loss.backward()
+
+            if opt.is_optimize:
+                optimizer.step()
+
+            # =========================================================
+            # metrics: 横顔(vid2)側だけで計測（valと揃える）
+            # vid_cat = [vid0(B), vid2(B)] の順なので後半 B 個が横顔
+            # =========================================================
+            B = txt.size(0)
+            y_side = y[B:]  # 横顔のみ
+
+            pred_txt = ctc_decode(y_side)
+            truth_txt = [MyDataset.arr2txt(txt[_], start=1) for _ in range(B)]
+            train_wer.extend(MyDataset.wer(pred_txt, truth_txt))
+            train_cer.extend(MyDataset.cer(pred_txt, truth_txt))
+
+            tot_iter = i_iter + epoch * len(train_loader)
+
+            # ---- iter display ----
+            if tot_iter % opt.display == 0:
+                avg_wer = float(np.mean(train_wer)) if len(train_wer) > 0 else 0.0
+                avg_cer = float(np.mean(train_cer)) if len(train_cer) > 0 else 0.0
+                writer.add_scalar('train loss', loss.item(), tot_iter)
+                writer.add_scalar('train wer', avg_wer, tot_iter)
+                writer.add_scalar('train cer', avg_cer, tot_iter)
+                print('-' * 101)
+                print(f'epoch={epoch}, tot_iter={tot_iter}, loss={loss.item():.4f}, train_wer={avg_wer:.4f}, train_cer={avg_cer:.4f}')
+                print('-' * 101)
+
+            # ---- val only (no test) ----
+            if tot_iter % opt.test_step == 0:
+                # 既存 test() が vids[2] を使う前提なので、これで横顔のみvalになる
+                val_loss, val_wer, val_cer = test(model, net, "", file_list=opt.val_list)
+
+                wandb.log({
+                    "val_epoch": val_epoch,
+                    "val_loss": val_loss,
+                    "val_wer": val_wer,
+                    "val_cer": val_cer
+                })
+                val_epoch += 1
+
+                writer.add_scalar('val loss', val_loss, tot_iter)
+                writer.add_scalar('val wer', val_wer, tot_iter)
+                writer.add_scalar('val cer', val_cer, tot_iter)
+
+        # ---- epoch summary ----
+        epoch_loss = loss_sum / len(train_loader)
+        epoch_wer = float(np.mean(train_wer)) if len(train_wer) > 0 else 0.0
+        epoch_cer = float(np.mean(train_cer)) if len(train_cer) > 0 else 0.0
+
+        train_logs['loss'].append(epoch_loss)
+        train_logs['wer'].append(epoch_wer)
+        train_logs['cer'].append(epoch_cer)
+
+        wandb.log({
+            "train_epoch": epoch,
+            "train_loss": epoch_loss,
+            "train_wer": epoch_wer,
+            "train_cer": epoch_cer
+        })
+
+        with open(csvname, 'a', newline='') as csvfile:
+            csvwriter = csv.writer(csvfile)
+            csvwriter.writerow([epoch, epoch_loss, epoch_wer, epoch_cer])
+
+        # ---- save ----
+        savename = f'{nowstr}_{opt.save_prefix}_train4_loss_{epoch_loss:.4f}_wer_{epoch_wer:.4f}_cer_{epoch_cer:.4f}.pt'
+        (path, name) = os.path.split(savename)
+        if path != "" and (not os.path.exists(path)):
+            os.makedirs(path)
+        torch.save(model.state_dict(), savename)
+
+        print(f'[train4] Epoch {epoch}: loss={epoch_loss:.4f}, wer={epoch_wer:.4f}, cer={epoch_cer:.4f}')
+
+    print('[train4] Training complete.')
+
+
+
 
 
 
@@ -1618,5 +1785,5 @@ if(__name__ == '__main__'):
     #pre_train3(model, net)
     #train(model,net)
     #combinationLoss(model,net)
-    train3(model,net)
+    train4(model,net)
     #train2(model,net)

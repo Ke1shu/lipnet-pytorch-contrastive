@@ -1,6 +1,6 @@
 gpu = '0'
 random_seed = 0
-data_type = 'mlac2016'
+data_type = 'unseen'
 video_path = 'lip/'
 train_list = f'data/{data_type}_train.txt'
 val_list = f'data/{data_type}_val.txt'
